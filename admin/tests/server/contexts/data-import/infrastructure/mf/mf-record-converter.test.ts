@@ -1,0 +1,390 @@
+import { MfRecordConverter } from "@/server/contexts/data-import/infrastructure/mf/mf-record-converter";
+import { MfCsvRecord } from "@/server/contexts/data-import/domain/models/mf-csv-record";
+
+describe("MfRecordConverter", () => {
+  let converter: MfRecordConverter;
+
+  beforeEach(() => {
+    converter = new MfRecordConverter();
+  });
+
+  describe("convertRow", () => {
+    const createMockRecord = (
+      overrides: Partial<MfCsvRecord> = {},
+    ): MfCsvRecord => ({
+      transaction_no: "1",
+      transaction_date: "2025/6/6",
+      debit_account: "テスト借方",
+      debit_sub_account: "",
+      debit_department: "",
+      debit_partner: "",
+      debit_tax_category: "",
+      debit_invoice: "",
+      debit_amount: "1000",
+      credit_account: "テスト貸方",
+      credit_sub_account: "",
+      credit_department: "",
+      credit_partner: "",
+      credit_tax_category: "",
+      credit_invoice: "",
+      credit_amount: "1000",
+      description: "",
+      friendly_category: "テストカテゴリ",
+      memo: "",
+      ...overrides,
+    });
+
+    it("should convert string amounts to integers", () => {
+      const record = createMockRecord({
+        debit_amount: "1500000",
+        credit_amount: "500000",
+      });
+
+      const result = converter.convertRow(record, "test-org-id");
+
+      expect(result.debit_amount).toBe(1500000);
+      expect(result.credit_amount).toBe(500000);
+      expect(result.transaction_type).toBe(null);
+    });
+
+    it("should handle amounts with commas", () => {
+      const record = createMockRecord({
+        debit_amount: "1,500,000",
+        credit_amount: "500,000",
+      });
+
+      const result = converter.convertRow(record, "test-org-id");
+
+      expect(result.debit_amount).toBe(1500000);
+      expect(result.credit_amount).toBe(500000);
+    });
+
+    it("should handle empty amounts as 0", () => {
+      const record = createMockRecord({
+        debit_amount: "",
+        credit_amount: "",
+      });
+
+      const result = converter.convertRow(record, "test-org-id");
+
+      expect(result.debit_amount).toBe(0);
+      expect(result.credit_amount).toBe(0);
+    });
+
+    it("should handle invalid amounts as 0", () => {
+      const record = createMockRecord({
+        debit_amount: "invalid",
+        credit_amount: "abc123",
+      });
+
+      const result = converter.convertRow(record, "test-org-id");
+
+      expect(result.debit_amount).toBe(0);
+      expect(result.credit_amount).toBe(0);
+    });
+
+    it("should set transaction_type to income when debit_account is 普通預金 and credit_account is PL category", () => {
+      const record = createMockRecord({
+        debit_account: "普通預金",
+        credit_account: "個人からの寄附",
+      });
+
+      const result = converter.convertRow(record, "test-org-id");
+
+      expect(result.transaction_type).toBe("income");
+    });
+
+    it("should set transaction_type to expense when credit_account is 普通預金 and debit_account is PL category", () => {
+      const record = createMockRecord({
+        debit_account: "事務所費",
+        credit_account: "普通預金",
+      });
+
+      const result = converter.convertRow(record, "test-org-id");
+
+      expect(result.transaction_type).toBe("expense");
+    });
+
+    it("should set transaction_type to other when neither account is 普通預金", () => {
+      const record = createMockRecord({
+        debit_account: "事務所費",
+        credit_account: "個人からの寄附",
+      });
+
+      const result = converter.convertRow(record, "test-org-id");
+
+      expect(result.transaction_type).toBe(null);
+    });
+
+    it("should set label when description starts with デビット", () => {
+      const record = createMockRecord({
+        description: "デビット1 123456 TEST",
+      });
+
+      const result = converter.convertRow(record, "test-org-id");
+
+      expect(result.label).toBe("デビット1 123456 TEST");
+    });
+
+    it("should set label when memo contains upsider (case-insensitive)", () => {
+      const record = createMockRecord({
+        description: "通常の明細",
+        memo: "Upsider",
+      });
+
+      const result = converter.convertRow(record, "test-org-id");
+
+      expect(result.label).toBe("通常の明細");
+    });
+
+    it("should set label when description contains amex (case-insensitive)", () => {
+      const record = createMockRecord({
+        description: "AMEX 123456 TEST",
+      });
+
+      const result = converter.convertRow(record, "test-org-id");
+
+      expect(result.label).toBe("AMEX 123456 TEST");
+    });
+
+    it("should not set label when conditions are not met", () => {
+      const record = createMockRecord({
+        description: "通常の明細",
+        memo: "別のメモ",
+      });
+
+      const result = converter.convertRow(record, "test-org-id");
+
+      expect(result.label).toBeUndefined();
+    });
+
+
+    it("取引日が読めない行は、無効にして理由と invalid_date を付ける", () => {
+      const record = createMockRecord({
+        transaction_date: "令和8年6月6日",
+        debit_account: "普通預金",
+        credit_account: "個人からの寄附",
+      });
+
+      const result = converter.convertRow(record, "test-org-id");
+
+      expect(result.status).toBe("invalid");
+      expect(result.invalid_date).toBe(true);
+      expect(result.errors).toContain('取引日を日付として読めません: "令和8年6月6日"');
+    });
+
+    it("取引日が読める行には invalid_date を付けない", () => {
+      const record = createMockRecord({
+        debit_account: "普通預金",
+        credit_account: "個人からの寄附",
+      });
+
+      const result = converter.convertRow(record, "test-org-id");
+
+      expect(result.invalid_date).toBeUndefined();
+    });
+
+    it("should preserve all other fields from the original record", () => {
+      const record = createMockRecord({
+        transaction_no: "123",
+        transaction_date: "2025/12/31",
+        debit_account: "普通預金",
+        debit_sub_account: "テスト銀行",
+        friendly_category: "テストタグ",
+        memo: "テストメモ",
+      });
+
+      const result = converter.convertRow(record, "test-org-id");
+
+      expect(result.political_organization_id).toBe("test-org-id");
+      expect(result.transaction_no).toBe("123");
+      expect(result.transaction_date).toEqual(new Date("2025/12/31"));
+      expect(result.debit_account).toBe("普通預金");
+      expect(result.debit_sub_account).toBe("テスト銀行");
+      expect(result.friendly_category).toBe("テストタグ");
+    });
+
+    it("should set transaction_type to non_cash_journal when both accounts are BS categories (未払費用の支払)", () => {
+      const record = createMockRecord({
+        debit_account: "未払費用",
+        credit_account: "普通預金",
+      });
+
+      const result = converter.convertRow(record, "test-org-id");
+
+      expect(result.transaction_type).toBe("non_cash_journal");
+      expect(result.status).toBe("insert");
+      expect(result.category_key).toBe("undefined");
+    });
+
+    it("should set transaction_type to expense when PL expense account is debit and non-cash BS account is credit", () => {
+      const record = createMockRecord({
+        debit_account: "事務所費",
+        credit_account: "未払費用",
+      });
+
+      const result = converter.convertRow(record, "test-org-id");
+
+      expect(result.transaction_type).toBe("expense");
+    });
+
+    it("should set transaction_type to income when non-cash BS account is debit and PL income account is credit", () => {
+      const record = createMockRecord({
+        debit_account: "仮受金",
+        credit_account: "個人からの寄附",
+      });
+
+      const result = converter.convertRow(record, "test-org-id");
+
+      expect(result.transaction_type).toBe("income");
+    });
+
+    it("should set transaction_type to expense when PL expense account is debit and 未払金 is credit", () => {
+      const record = createMockRecord({
+        debit_account: "備品・消耗品費",
+        credit_account: "未払金",
+      });
+
+      const result = converter.convertRow(record, "test-org-id");
+
+      expect(result.transaction_type).toBe("expense");
+      expect(result.status).toBe("insert");
+    });
+
+    it("should set transaction_type to expense when 未払費用 is debit and PL expense account is credit (未払の反対取引)", () => {
+      const record = createMockRecord({
+        debit_account: "未払費用",
+        credit_account: "宣伝事業費",
+      });
+
+      const result = converter.convertRow(record, "test-org-id");
+
+      expect(result.transaction_type).toBe("expense");
+    });
+
+    it("should set transaction_type to income when 未収入金 is debit and PL income account is credit (未収の計上)", () => {
+      const record = createMockRecord({
+        debit_account: "未収入金",
+        credit_account: "個人からの寄附",
+      });
+
+      const result = converter.convertRow(record, "test-org-id");
+
+      expect(result.transaction_type).toBe("income");
+      expect(result.status).toBe("insert");
+    });
+
+    it("should set transaction_type to non_cash_journal when 未収入金 is settled against 普通預金 (未収の回収)", () => {
+      const record = createMockRecord({
+        debit_account: "普通預金",
+        credit_account: "未収入金",
+      });
+
+      const result = converter.convertRow(record, "test-org-id");
+
+      expect(result.transaction_type).toBe("non_cash_journal");
+      expect(result.status).toBe("insert");
+    });
+
+    it("should set transaction_type to null for the legacy account 未払金/未払費用", () => {
+      const record = createMockRecord({
+        debit_account: "事務所費",
+        credit_account: "未払金/未払費用",
+      });
+
+      const result = converter.convertRow(record, "test-org-id");
+
+      expect(result.transaction_type).toBe(null);
+      expect(result.status).toBe("invalid");
+    });
+
+    it("should set transaction_type to expense when PL expense account is debit and 仮払金 is credit", () => {
+      const record = createMockRecord({
+        debit_account: "事務所費",
+        credit_account: "仮払金",
+      });
+
+      const result = converter.convertRow(record, "test-org-id");
+
+      expect(result.transaction_type).toBe("expense");
+    });
+
+    it("should set transaction_type to expense when 仮払金 is debit and PL expense account is credit (仮払精算)", () => {
+      const record = createMockRecord({
+        debit_account: "仮払金",
+        credit_account: "事務所費",
+      });
+
+      const result = converter.convertRow(record, "test-org-id");
+
+      expect(result.transaction_type).toBe("expense");
+    });
+
+    it("should set transaction_type to non_cash_journal when both accounts are non-cash BS categories", () => {
+      const record = createMockRecord({
+        debit_account: "仮払金",
+        credit_account: "未払費用",
+      });
+
+      const result = converter.convertRow(record, "test-org-id");
+
+      expect(result.transaction_type).toBe("non_cash_journal");
+    });
+
+    it("should set transaction_type to income when debit_account is 現金 and credit_account is PL category", () => {
+      const record = createMockRecord({
+        debit_account: "現金",
+        credit_account: "個人からの寄附",
+      });
+
+      const result = converter.convertRow(record, "test-org-id");
+
+      expect(result.transaction_type).toBe("income");
+    });
+
+    it("should set transaction_type to expense when credit_account is 現金 and debit_account is PL category", () => {
+      const record = createMockRecord({
+        debit_account: "事務所費",
+        credit_account: "現金",
+      });
+
+      const result = converter.convertRow(record, "test-org-id");
+
+      expect(result.transaction_type).toBe("expense");
+    });
+
+    it("should set transaction_type to expense when PL and 仮払金 are mixed", () => {
+      const record = createMockRecord({
+        debit_account: "事務所費",
+        credit_account: "仮払金",
+      });
+
+      const result = converter.convertRow(record, "test-org-id");
+
+      expect(result.transaction_type).toBe("expense");
+    });
+
+    it("should set transaction_type to expense when PL and 立替金 are mixed", () => {
+      const record = createMockRecord({
+        debit_account: "事務所費",
+        credit_account: "立替金",
+      });
+
+      const result = converter.convertRow(record, "test-org-id");
+
+      expect(result.transaction_type).toBe("expense");
+    });
+
+
+    it("should preserve friendly_category field as-is", () => {
+      const record = createMockRecord({
+        friendly_category: "テストタグ値",
+      });
+
+      const result = converter.convertRow(record, "test-org-id");
+
+      expect(result.friendly_category).toBe("テストタグ値");
+    });
+  });
+
+});

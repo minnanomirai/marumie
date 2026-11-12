@@ -1,0 +1,197 @@
+/**
+ * 環境間同期用 JSON の取り込み（インポート）のドメインモデル。
+ *
+ * ファイルの形式そのものは書き出し側（organization-sync-export）と共有する。
+ * ここには「取り込むときにだけ必要な概念」——実行前の確認（dry-run）で見せる件数、
+ * 自然キー、環境による可否判定、失敗の種類——を置く。
+ */
+
+import type {
+  OrganizationSyncExport,
+  SyncExportCounterpart,
+  SyncExportDonor,
+} from "@/server/contexts/shared/domain/models/organization-sync-export";
+
+/**
+ * 取り込みが対応しているファイル形式のバージョン。
+ * 書き出し側が上げたバージョンに追随するまでは、そのファイルを受け付けない。
+ */
+export const SYNC_IMPORT_SUPPORTED_FORMAT_VERSIONS: readonly number[] = [1];
+
+/** 取引先の自然キー。DB の一意制約 (name, address) と一致させる。 */
+export interface SyncImportCounterpartKey {
+  name: string;
+  address: string | null;
+}
+
+/** 寄付者の自然キー。DB の一意制約 (name, address, donor_type) と一致させる。 */
+export interface SyncImportDonorKey {
+  donorType: string;
+  name: string;
+  address: string | null;
+}
+
+export function toCounterpartKey(counterpart: SyncExportCounterpart): SyncImportCounterpartKey {
+  return { name: counterpart.name, address: counterpart.address };
+}
+
+export function toDonorKey(donor: SyncExportDonor): SyncImportDonorKey {
+  return { donorType: donor.donorType, name: donor.name, address: donor.address };
+}
+
+/**
+ * 自然キーを Map / Set の鍵にできる文字列にする。
+ * 区切り文字が値に含まれていても衝突しないよう JSON 化する。
+ */
+export function serializeCounterpartKey(key: SyncImportCounterpartKey): string {
+  return JSON.stringify([key.name, key.address]);
+}
+
+export function serializeDonorKey(key: SyncImportDonorKey): string {
+  return JSON.stringify([key.donorType, key.name, key.address]);
+}
+
+/**
+ * ファイルに出てくる取引先・寄付者を、出現順を保ったまま自然キーで重複排除して取り出す。
+ * dry-run の「新規作成される件数」も、実際の取り込みも、この一覧を起点にする。
+ */
+export function collectDistinctCounterpartsAndDonors(file: OrganizationSyncExport): {
+  counterparts: SyncExportCounterpart[];
+  donors: SyncExportDonor[];
+} {
+  const counterparts = new Map<string, SyncExportCounterpart>();
+  const donors = new Map<string, SyncExportDonor>();
+
+  for (const transaction of file.transactions) {
+    if (transaction.counterpart) {
+      const key = serializeCounterpartKey(toCounterpartKey(transaction.counterpart));
+      if (!counterparts.has(key)) counterparts.set(key, transaction.counterpart);
+    }
+    if (transaction.donor) {
+      const key = serializeDonorKey(toDonorKey(transaction.donor));
+      if (!donors.has(key)) donors.set(key, transaction.donor);
+    }
+  }
+
+  return { counterparts: [...counterparts.values()], donors: [...donors.values()] };
+}
+
+/**
+ * 実行前に画面へ出す確認内容（dry-run）。
+ * 「何が消えて、何が入り、何が新しく作られるか」を実行前に見せるためのもの。
+ */
+export interface OrganizationSyncImportPlan {
+  /** ファイルに書かれている団体 slug。実行時の確認入力と突き合わせる。 */
+  organizationSlug: string;
+  /** 取り込み先（この環境）の政治団体の表示名。別の団体に入れてしまう事故を防ぐために見せる。 */
+  organizationDisplayName: string;
+  exportedAt: string;
+  sourceEnvironment: string;
+  latestMigrationName: string | null;
+  /** 置き換えのために削除される、この環境の既存取引の件数。 */
+  deletingTransactionCount: number;
+  /** ファイルから取り込まれる取引の件数。 */
+  importingTransactionCount: number;
+  deletingBalanceSnapshotCount: number;
+  importingBalanceSnapshotCount: number;
+  /** ファイルに出てくる取引先のうち、この環境にまだ無いもの（新規作成される）の件数。 */
+  newCounterpartCount: number;
+  newDonorCount: number;
+  /** 団体 × 年度で上書きされる報告書プロフィールの件数。 */
+  upsertingReportProfileCount: number;
+}
+
+/** 取り込みの実行結果。 */
+export interface OrganizationSyncImportResult {
+  organizationSlug: string;
+  /**
+   * 置き換え自体は成功したが webapp のキャッシュ無効化に失敗した場合のメッセージ。
+   * DB はすでに置き換わっているので、取り込み全体を失敗扱いにはせず警告として返す。
+   */
+  cacheInvalidationError: string | null;
+  deletedTransactionCount: number;
+  importedTransactionCount: number;
+  createdCounterpartCount: number;
+  createdDonorCount: number;
+  importedBalanceSnapshotCount: number;
+  upsertedReportProfileCount: number;
+}
+
+/**
+ * ファイルの内容が受け付けられないとき（JSON として壊れている、形式バージョンが未対応、
+ * 知らないカラムがある、確認入力が一致しない など）。呼び出し元はそのまま画面に出してよい。
+ */
+export class SyncImportValidationError extends Error {}
+
+/** ファイルの団体 slug に一致する政治団体がこの環境に無いとき。 */
+export class SyncImportOrganizationNotFoundError extends Error {}
+
+/** この環境では取り込みが許可されていないとき（フラグ未設定 / 本番）。 */
+export class SyncImportForbiddenError extends Error {}
+
+/**
+ * 置き換えが制限時間内に終わらなかったとき。トランザクションごと取り消されており、DB は元のまま。
+ * 途中で黙って切れたのではないことを画面で伝える。
+ */
+export class SyncImportTimeoutError extends Error {}
+
+/** 取り込み元のストレージにファイルを置けない・読めないとき（バケット未作成、置いたファイルが無い など）。 */
+export class SyncImportStorageError extends Error {}
+
+/**
+ * 受け付ける同期用 JSON の最大サイズ。
+ * ファイルは Vercel の関数（リクエストボディ 4.5MB 上限）を通さずストレージへ直接置くので、
+ * 上限はストレージのバケットの上限（supabase/config.toml の sync-imports）に揃える。
+ * 取り込み時は関数のメモリ（2GB）にファイル全体を読み込むので、それに収まる大きさに留める。
+ */
+export const SYNC_IMPORT_MAX_FILE_BYTES = 200 * 1024 * 1024;
+
+/** {@link SYNC_IMPORT_MAX_FILE_BYTES} を画面に出すときの表記。 */
+export const SYNC_IMPORT_MAX_FILE_SIZE_LABEL = "200MB";
+
+/** 選ばれたファイルの大きさを受け付けられるか確かめる。受け付けられなければ理由を返す。 */
+export function validateSyncImportFileSize(fileSize: number): string | null {
+  if (!Number.isFinite(fileSize) || fileSize <= 0) {
+    return "ファイルが空です";
+  }
+  if (fileSize > SYNC_IMPORT_MAX_FILE_BYTES) {
+    const megabytes = (fileSize / 1024 / 1024).toFixed(1);
+    return `ファイルが大きすぎます（${megabytes}MB）。取り込めるのは ${SYNC_IMPORT_MAX_FILE_SIZE_LABEL} までです`;
+  }
+  return null;
+}
+
+/** ストレージに置いた同期用 JSON のキー。サーバーが発行した形（UUID + .json）だけを受け付ける。 */
+const SYNC_IMPORT_STORAGE_KEY_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json$/;
+
+export function isSyncImportStorageKey(value: string): boolean {
+  return SYNC_IMPORT_STORAGE_KEY_PATTERN.test(value);
+}
+
+/**
+ * 取り込まれずにストレージに残った同期用 JSON を消すまでの時間。
+ * 確認を見てから取り込むまでの間に消してしまわないよう、画面での作業時間より十分長くとる。
+ */
+const SYNC_IMPORT_STALE_FILE_AGE_MS = 24 * 60 * 60 * 1000;
+
+/** ストレージに置かれている同期用 JSON 1 件。 */
+export interface SyncImportStoredFile {
+  storageKey: string;
+  createdAt: Date;
+}
+
+/**
+ * 取り込まれずに {@link SYNC_IMPORT_STALE_FILE_AGE_MS} 以上経った同期用 JSON のキーを選ぶ。
+ * サーバーが発行した形のキーだけを対象にし、バケットに置かれた他のものには触れない。
+ */
+export function selectStaleSyncImportStorageKeys(
+  files: readonly SyncImportStoredFile[],
+  now: Date,
+): string[] {
+  const cutoff = now.getTime() - SYNC_IMPORT_STALE_FILE_AGE_MS;
+  return files
+    .filter((file) => isSyncImportStorageKey(file.storageKey))
+    .filter((file) => file.createdAt.getTime() <= cutoff)
+    .map((file) => file.storageKey);
+}

@@ -1,0 +1,118 @@
+import { PL_CATEGORIES, BS_CATEGORIES } from "@/shared/accounting/account-category";
+import { PreviewTransaction } from "@/server/contexts/data-import/domain/models/preview-transaction";
+import type { Transaction } from "@/shared/models/transaction";
+
+const OFFSET_EXPENSE_ACCOUNT = "相殺項目（費用）";
+const OFFSET_INCOME_ACCOUNT = "相殺項目（収入）";
+
+export class TransactionValidator {
+  public validatePreviewTransactions(
+    transactions: PreviewTransaction[],
+    existingTransactions: Transaction[] = [],
+  ): PreviewTransaction[] {
+    return transactions.map((transaction) =>
+      this.validateSingleTransaction(transaction, existingTransactions),
+    );
+  }
+
+  private validateSingleTransaction(
+    transaction: PreviewTransaction,
+    existingTransactions: Transaction[],
+  ): PreviewTransaction {
+    // 1. validチェック（早期リターン）
+    const validationErrors: string[] = [];
+
+    // Validate accounts
+    const accountValidationErrors = this.validateAccounts(transaction);
+    validationErrors.push(...accountValidationErrors);
+
+    // Validate friendly_category
+    const categoryValidationError = this.validateFriendlyCategory(transaction);
+    if (categoryValidationError) {
+      validationErrors.push(categoryValidationError);
+    }
+
+    // 取引日が読めなかった行は、変換で付けた理由（transaction.errors）のまま無効にする。
+    // 挿入・更新に上書きすると、仮の日付 1970-01-01 のまま保存されてしまう。
+    if (transaction.invalid_date || validationErrors.length > 0) {
+      return {
+        ...transaction,
+        status: "invalid",
+        errors: [...transaction.errors, ...validationErrors],
+      };
+    }
+
+    // 2. transaction_noチェック（早期リターン）
+    // MF の取引No は年度ごとに振り直されるため、同じ年度の取引だけを同一とみなす
+    const financialYear = PreviewTransaction.extractFinancialYear(transaction.transaction_date);
+    const duplicateByTransactionNo = existingTransactions.find(
+      (existing) =>
+        existing.transaction_no === transaction.transaction_no &&
+        existing.financial_year === financialYear,
+    );
+
+    if (!duplicateByTransactionNo) {
+      // transaction_noが存在しなければinsertに確定
+      return {
+        ...transaction,
+        status: "insert",
+        errors: [],
+      };
+    }
+
+    // 3. hash同一性チェック（同じtransaction_noのトランザクションとhashを比較）
+    if (duplicateByTransactionNo.hash === transaction.hash) {
+      return {
+        ...transaction,
+        status: "skip",
+        errors: ["重複のためスキップされます"],
+      };
+    }
+
+    // transaction_noは存在するがhashが異なる場合はupdate
+    return {
+      ...transaction,
+      status: "update",
+      errors: [],
+      existingTransactionId: duplicateByTransactionNo.id,
+    };
+  }
+
+  private validateAccounts(transaction: PreviewTransaction): string[] {
+    const errors: string[] = [];
+    const validAccountLabels = new Set([
+      ...Object.keys(PL_CATEGORIES),
+      ...Object.keys(BS_CATEGORIES),
+      OFFSET_EXPENSE_ACCOUNT,
+      OFFSET_INCOME_ACCOUNT,
+    ]);
+
+    if (!validAccountLabels.has(transaction.debit_account)) {
+      errors.push(`無効な借方科目: "${transaction.debit_account}"`);
+    }
+
+    if (!validAccountLabels.has(transaction.credit_account)) {
+      errors.push(`無効な貸方科目: "${transaction.credit_account}"`);
+    }
+
+    return errors;
+  }
+
+  private validateFriendlyCategory(transaction: PreviewTransaction): string | null {
+    const isOffsetTransaction =
+      transaction.debit_account === OFFSET_EXPENSE_ACCOUNT ||
+      transaction.credit_account === OFFSET_INCOME_ACCOUNT;
+    // 非現金仕訳（BS科目同士の仕訳）は収支として表示されないため、独自のカテゴリを必須にしない
+    const isNonCashJournal = transaction.transaction_type === "non_cash_journal";
+
+    if (
+      !isOffsetTransaction &&
+      !isNonCashJournal &&
+      (!transaction.friendly_category || transaction.friendly_category.trim() === "")
+    ) {
+      return "独自のカテゴリが設定されていません";
+    }
+
+    return null;
+  }
+}

@@ -1,0 +1,51 @@
+"use server";
+import { revalidatePath } from "next/cache";
+import type { PoliticianInput } from "@/shared/models/politician";
+import { requireRole } from "@/server/contexts/auth/presentation/loaders/require-role";
+import { requireResearchFundWriter } from "@/server/contexts/auth/presentation/loaders/require-research-fund-writer";
+import { SavePoliticianUsecase } from "@/server/contexts/shared/application/usecases/save-politician-usecase";
+import { DeletePoliticianUsecase } from "@/server/contexts/shared/application/usecases/delete-politician-usecase";
+import { SetPoliticianResearchFundPublicUsecase } from "@/server/contexts/shared/application/usecases/set-politician-research-fund-public-usecase";
+import { PrismaPoliticianRepository } from "@/server/contexts/shared/infrastructure/repositories/prisma-politician.repository";
+import { prisma } from "@/server/contexts/shared/infrastructure/prisma";
+import { WebappCacheInvalidator } from "@/server/contexts/shared/infrastructure/services/webapp-cache-invalidator";
+
+export async function savePolitician(id: string | null, input: PoliticianInput) {
+  await requireRole("admin");
+  try {
+    await new SavePoliticianUsecase(new PrismaPoliticianRepository(prisma)).execute(id, input);
+    revalidatePath("/(auth)", "layout");
+    return { success: true as const };
+  } catch (error) {
+    return {
+      success: false as const,
+      error: error instanceof Error ? error.message : "保存に失敗しました",
+    };
+  }
+}
+export async function setPoliticianResearchFundPublic(id: string, isPublic: boolean) {
+  await requireResearchFundWriter(id);
+  try {
+    const result = await new SetPoliticianResearchFundPublicUsecase(
+      new PrismaPoliticianRepository(prisma),
+      new WebappCacheInvalidator(),
+    ).execute(id, isPublic);
+    revalidatePath("/(auth)", "layout");
+    return { success: true as const, ...result };
+  } catch (error) {
+    return {
+      success: false as const,
+      error: error instanceof Error ? error.message : "公開設定の変更に失敗しました",
+    };
+  }
+}
+export async function deletePolitician(id: string) {
+  await requireRole("admin");
+  try {
+    await new DeletePoliticianUsecase(new PrismaPoliticianRepository(prisma)).execute(id);
+    revalidatePath("/(auth)", "layout");
+    return { success: true as const };
+  } catch {
+    return { success: false as const, error: "削除に失敗しました。もう一度お試しください" };
+  }
+}

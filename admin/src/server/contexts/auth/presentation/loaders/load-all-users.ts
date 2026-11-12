@@ -1,0 +1,32 @@
+import "server-only";
+
+import { redirect } from "next/navigation";
+import {
+  GetAllUsersUsecase,
+  type UserWithAssignments,
+} from "@/server/contexts/auth/application/usecases/get-all-users-usecase";
+import { SupabaseAuthProvider } from "@/server/contexts/auth/infrastructure/supabase/supabase-auth-provider";
+import { prisma } from "@/server/contexts/shared/infrastructure/prisma";
+import { PrismaUserRepository } from "@/server/contexts/shared/infrastructure/repositories/prisma-user.repository";
+import { AuthError } from "@/server/contexts/auth/domain/errors/auth-error";
+
+/**
+ * 全ユーザー一覧を（担当議員とあわせて）取得するローダー（admin権限必須）
+ * 認可チェック後にユーザー一覧を返す
+ */
+export async function loadAllUsers(): Promise<UserWithAssignments[]> {
+  const authProvider = new SupabaseAuthProvider();
+  const userRepository = new PrismaUserRepository(prisma);
+  const usecase = new GetAllUsersUsecase(authProvider, userRepository);
+
+  try {
+    return await usecase.execute();
+  } catch (e) {
+    if (e instanceof AuthError) {
+      if (e.code === "AUTH_FAILED" || e.code === "INSUFFICIENT_PERMISSION") {
+        redirect("/login");
+      }
+    }
+    throw e;
+  }
+}

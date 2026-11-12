@@ -1,0 +1,109 @@
+@import "tailwindcss";
+
+@layer utilities {
+  .font-japanese {
+    font-family: var(--font-zen-kaku), "Zen Kaku Gothic New", sans-serif;
+  }
+  .font-english {
+    font-family: var(--font-poppins), "Poppins", sans-serif;
+  }
+
+  /* Screen Reader Only - スクリーンリーダー専用コンテンツ */
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+}
+
+:root {
+  --background: #ffffff;
+  --foreground: #000000;
+
+  /* Figma Design System Colors */
+  /* Black系 */
+  --color-black-500: #85868e;
+  --color-black-600: #6b7280;
+  --color-black-700: #4b5563;
+  --color-black-800: #1f2937;
+  --color-black-900: #000000;
+
+  /* Primary（みんなのみらいの配色: 黒系） */
+  --color-primary-400: #484848;
+  --color-primary-500: #222222;
+  --color-primary-600: #000000;
+
+  /* Accent（赤） */
+  --color-accent: #bf342b;
+
+  /* Panel */
+  --color-panel: #f9f9f9;
+
+  /* Red系 (Danger) */
+  --color-danger-500: #bf342b;
+  --color-danger-600: #a82a22;
+
+  /* Background */
+  --color-white: #ffffff;
+
+  /* Semantic colors */
+  --color-income: #1e88e5;
+  --color-expense: var(--color-danger-500);
+  --color-text-primary: var(--color-black-900);
+  --color-text-secondary: var(--color-black-500);
+  --color-text-muted: var(--color-black-600);
+}
+
+body {
+  background: var(--background);
+  background-color: #ffffff; /* バウンスエフェクト時の背景色 */
+  color: var(--foreground);
+  font-family: var(--font-poppins), var(--font-zen-kaku), "Zen Kaku Gothic New", sans-serif;
+  letter-spacing: 0.04em;
+}
+
+/* フォーカスインジケーター - キーボードナビゲーション用のみ */
+*:focus {
+  outline: none; /* デフォルトのアウトラインを無効化 */
+}
+
+*:focus-visible {
+  outline: 2px solid #bf342b;
+  outline-offset: 2px;
+}
+
+/* ボタンのフォーカス - キーボードのみ */
+button:focus {
+  outline: none;
+}
+
+button:focus-visible {
+  outline: 2px solid #bf342b;
+  outline-offset: 2px;
+}
+
+/* リンクのフォーカス - キーボードのみ */
+a:focus {
+  outline: none;
+}
+
+a:focus-visible {
+  outline: 2px solid #bf342b;
+  outline-offset: 2px;
+}
+
+/* テーブルのフォーカス - キーボードのみ */
+table:focus {
+  outline: none;
+}
+
+table:focus-visible {
+  outline: 2px solid #bf342b;
+  outline-offset: 2px;
+}

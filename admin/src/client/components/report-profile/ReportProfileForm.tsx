@@ -1,0 +1,124 @@
+"use client";
+import "client-only";
+
+import { useState } from "react";
+import { saveOrganizationProfile } from "@/server/contexts/report/presentation/actions/save-organization-profile";
+import type { OrganizationReportProfile } from "@/server/contexts/report/domain/models/organization-report-profile";
+import { BasicInfoSection } from "./BasicInfoSection";
+import { RepresentativeSection } from "./RepresentativeSection";
+import { ContactPersonsSection } from "./ContactPersonsSection";
+import { OrganizationTypeSection } from "./OrganizationTypeSection";
+import { FundManagementSection } from "./FundManagementSection";
+import { DietMemberRelationSection } from "./DietMemberRelationSection";
+import type { OrganizationReportProfileFormData } from "@/server/contexts/report/presentation/schemas/organization-report-profile.schema";
+import { Button } from "@/client/components/ui";
+
+interface ReportProfileFormProps {
+  politicalOrganizationId: string;
+  financialYear: number;
+  initialData: OrganizationReportProfile | null;
+}
+
+export function ReportProfileForm({
+  politicalOrganizationId,
+  financialYear,
+  initialData,
+}: ReportProfileFormProps) {
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState(false);
+
+  const [formData, setFormData] = useState<OrganizationReportProfileFormData>({
+    id: initialData?.id,
+    politicalOrganizationId,
+    financialYear,
+    officialName: initialData?.officialName ?? "",
+    officialNameKana: initialData?.officialNameKana ?? "",
+    officeAddress: initialData?.officeAddress ?? "",
+    officeAddressBuilding: initialData?.officeAddressBuilding ?? "",
+    details: initialData?.details ?? {},
+  });
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
+    setError(null);
+    setSuccess(false);
+
+    try {
+      const result = await saveOrganizationProfile({
+        id: formData.id,
+        politicalOrganizationId: formData.politicalOrganizationId,
+        financialYear: formData.financialYear,
+        officialName: formData.officialName || null,
+        officialNameKana: formData.officialNameKana || null,
+        officeAddress: formData.officeAddress || null,
+        officeAddressBuilding: formData.officeAddressBuilding || null,
+        details: formData.details,
+      });
+
+      if (result.success) {
+        setSuccess(true);
+        setFormData((prev: OrganizationReportProfileFormData) => ({
+          ...prev,
+          id: result.profile.id,
+        }));
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存に失敗しました");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const updateFormData = (updates: Partial<OrganizationReportProfileFormData>) => {
+    setFormData((prev: OrganizationReportProfileFormData) => ({
+      ...prev,
+      ...updates,
+    }));
+  };
+
+  const updateDetails = (updates: Partial<OrganizationReportProfileFormData["details"]>) => {
+    setFormData((prev: OrganizationReportProfileFormData) => ({
+      ...prev,
+      details: { ...prev.details, ...updates },
+    }));
+  };
+
+  // data-financial-year: このフォームがどの報告年に紐付いているかを DOM 上で示す。
+  // 年度切り替え時は key で再マウントされるため、E2E は URL ではなくこの属性で
+  // 「選択した年度のフォームが表示済み」であることを待つ。
+  return (
+    <form onSubmit={handleSubmit} className="space-y-6" data-financial-year={financialYear}>
+      {error && (
+        <div className="rounded-lg border border-destructive bg-destructive-hover p-3 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+
+      {success && (
+        <div className="rounded-lg border border-primary-active bg-accent p-3 text-sm text-accent-foreground">
+          保存しました
+        </div>
+      )}
+
+      <BasicInfoSection formData={formData} updateFormData={updateFormData} />
+
+      <RepresentativeSection details={formData.details} updateDetails={updateDetails} />
+
+      <ContactPersonsSection details={formData.details} updateDetails={updateDetails} />
+
+      <OrganizationTypeSection details={formData.details} updateDetails={updateDetails} />
+
+      <FundManagementSection details={formData.details} updateDetails={updateDetails} />
+
+      <DietMemberRelationSection details={formData.details} updateDetails={updateDetails} />
+
+      <div className="flex gap-3 pt-4">
+        <Button type="submit" disabled={isLoading}>
+          {isLoading ? "保存中..." : "保存"}
+        </Button>
+      </div>
+    </form>
+  );
+}

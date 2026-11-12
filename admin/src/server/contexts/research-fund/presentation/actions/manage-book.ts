@@ -1,0 +1,57 @@
+"use server";
+import { BookError } from "@/server/contexts/research-fund/domain/types/book-error";
+import { revalidatePath } from "next/cache";
+import type { BookMetadata } from "@/server/contexts/research-fund/domain/models/book";
+import { requireResearchFundWriter } from "@/server/contexts/auth/presentation/loaders/require-research-fund-writer";
+import { CreateBookUsecase } from "@/server/contexts/research-fund/application/usecases/create-book-usecase";
+import { UpdateBookUsecase } from "@/server/contexts/research-fund/application/usecases/update-book-usecase";
+import { PrismaBookRepository } from "@/server/contexts/research-fund/infrastructure/repositories/prisma-book.repository";
+import { prisma } from "@/server/contexts/shared/infrastructure/prisma";
+import { WebappCacheInvalidator } from "@/server/contexts/shared/infrastructure/services/webapp-cache-invalidator";
+function publicErrorMessage(error: unknown, fallback: string): string {
+  if (!(error instanceof BookError)) return fallback;
+  switch (error.code) {
+    case "INVALID_ID":
+      return "IDが不正です";
+    case "DUPLICATE_BOOK":
+      return "この議員の年度帳簿は既に存在します";
+    case "RF_INVALID_BOOK_YEAR":
+      return "年度は1900〜9999の整数で指定してください";
+    case "RF_INVALID_BOOK_METADATA":
+      return "帳簿情報の入力が不正です";
+    case "RF_INVALID_DATE":
+      return "時点の日付を正しく入力してください";
+    default:
+      return fallback;
+  }
+}
+
+export async function createBook(politicianId: string, year: number) {
+  await requireResearchFundWriter(politicianId);
+  try {
+    await new CreateBookUsecase(new PrismaBookRepository(prisma)).execute(politicianId, year);
+    revalidatePath("/(auth)", "layout");
+    return { success: true as const };
+  } catch (error) {
+    return {
+      success: false as const,
+      error: publicErrorMessage(error, "作成に失敗しました"),
+    };
+  }
+}
+export async function updateBook(politicianId: string, bookId: string, input: BookMetadata) {
+  await requireResearchFundWriter(politicianId);
+  try {
+    const { cacheWarning } = await new UpdateBookUsecase(
+      new PrismaBookRepository(prisma),
+      new WebappCacheInvalidator(),
+    ).execute(politicianId, bookId, input);
+    revalidatePath("/(auth)", "layout");
+    return { success: true as const, cacheWarning };
+  } catch (error) {
+    return {
+      success: false as const,
+      error: publicErrorMessage(error, "保存に失敗しました"),
+    };
+  }
+}

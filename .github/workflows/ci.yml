@@ -1,0 +1,447 @@
+name: CI
+
+# すべてのPRで起動する（paths での起動抑止はしない）。
+# ci-complete を必須チェックにするため、対象外のPRでもチェックが必ず報告される
+# 必要があるため。実際にジョブを走らせるかどうかは changes ジョブで判定する。
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+env:
+  # Supabase local development defaults
+  # Note: SUPABASE_ANON_KEY and SUPABASE_SERVICE_ROLE_KEY are now dynamically generated
+  # by Supabase CLI and will be extracted after `supabase start` in the e2e job
+  # ポートは supabase/config.toml（[api] 54331 / [db] 54332）に合わせる。
+  # ローカルと CI で同じ設定ファイルをそのまま使う（CI 用の書き換えはしない）。
+  SUPABASE_URL: http://127.0.0.1:54331
+  DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:54332/postgres
+  DIRECT_URL: postgresql://postgres:postgres@127.0.0.1:54332/postgres
+
+jobs:
+  # コード関連のパスが変更されているかを判定する。
+  # docs のみのPRでは後続ジョブをスキップし、ci-complete だけが成功する。
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - name: Detect code changes
+        id: filter
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # push（main）では常に全ジョブを実行する
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          files="$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files" --jq '.[].filename')"
+          echo "$files"
+
+          pattern='^(admin/|webapp/|packages/|shared/|prisma/|supabase/|scripts/|\.github/workflows/|\.dependency-cruiser\.cjs$|biome\.json$|knip\.json$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|tsconfig\.json$)'
+          if printf '%s\n' "$files" | grep -qE "$pattern"; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  admin:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '26'
+          cache: 'pnpm'
+
+      - name: Cache Prisma client
+        uses: actions/cache@v6
+        with:
+          path: node_modules/.prisma
+          key: ${{ runner.os }}-prisma-${{ hashFiles('prisma/schema.prisma') }}
+          restore-keys: |
+            ${{ runner.os }}-prisma-
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Run lint for admin
+        run: pnpm --filter admin run lint
+
+      - name: Run tests for admin with coverage
+        run: pnpm --filter admin run test:coverage
+
+      - name: Run type check for admin
+        run: pnpm --filter admin run type-check
+
+      - name: Check dependency rules for admin
+        run: pnpm depcruise
+
+      # admin / webapp 両方の usecase を見るリポジトリ横断のチェック（depcruise と同様）
+      - name: Check usecase shape
+        run: pnpm check:usecase-shape
+
+      - name: Upload admin coverage
+        uses: actions/upload-artifact@v7
+        with:
+          name: admin-coverage
+          path: admin/coverage/lcov.info
+
+  webapp:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/test
+      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/test
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '26'
+          cache: 'pnpm'
+
+      - name: Cache Prisma client
+        uses: actions/cache@v6
+        with:
+          path: node_modules/.prisma
+          key: ${{ runner.os }}-prisma-${{ hashFiles('prisma/schema.prisma') }}
+          restore-keys: |
+            ${{ runner.os }}-prisma-
+
+      - name: Cache Next.js build
+        uses: actions/cache@v6
+        with:
+          path: webapp/.next/cache
+          key: ${{ runner.os }}-nextjs-webapp-${{ hashFiles('pnpm-lock.yaml') }}-${{ hashFiles('webapp/**/*.ts', 'webapp/**/*.tsx') }}
+          restore-keys: |
+            ${{ runner.os }}-nextjs-webapp-${{ hashFiles('pnpm-lock.yaml') }}-
+            ${{ runner.os }}-nextjs-webapp-
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
+
+      # .next/cache には Data Cache（fetch-cache）が永続化されるため、
+      # 前ランのデータ持ち越しを防ぐようビルド前に必ず削除する（e2e ジョブと同様）
+      - name: Remove restored Next.js Data Cache
+        run: rm -rf webapp/.next/cache/fetch-cache
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Run lint for webapp
+        run: pnpm --filter webapp run lint
+
+      - name: Run tests for webapp with coverage
+        run: pnpm --filter webapp run test:coverage
+
+      - name: Run type check for webapp
+        run: pnpm --filter webapp run type-check
+
+      - name: Install Playwright browsers
+        run: pnpm --filter webapp exec playwright install chromium --with-deps
+
+      # webapp ジョブは postgres コンテナのみで supabase を起動しない。
+      # seed は SERVICE_ROLE_KEY が無ければユーザー作成をスキップするため、
+      # supabase-env ラッパーの「未起動ならエラー」を SUPABASE_ENV_OPTIONAL で緩和する。
+      - name: Run database migrations and seed
+        env:
+          SUPABASE_ENV_OPTIONAL: '1'
+        run: |
+          pnpm db:migrate:deploy
+          pnpm db:seed
+
+      - name: Build webapp
+        run: pnpm build:webapp
+
+      - name: Run E2E tests for webapp
+        run: pnpm --filter webapp test:e2e
+
+      - name: Upload webapp coverage
+        uses: actions/upload-artifact@v7
+        with:
+          name: webapp-coverage
+          path: webapp/coverage/lcov.info
+
+      - name: Upload webapp E2E test results
+        uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: webapp-e2e-report
+          path: webapp/e2e/.output/
+          retention-days: 7
+          # .output は「.」始まりの隠しディレクトリなので、明示しないと何もアップロードされない
+          include-hidden-files: true
+
+  knip:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '26'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Check unused code
+        run: pnpm knip
+
+  coverage:
+    runs-on: ubuntu-latest
+    needs: [changes, admin, webapp]
+    if: needs.changes.outputs.code == 'true'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Download admin coverage
+        uses: actions/download-artifact@v8
+        with:
+          name: admin-coverage
+          path: admin/coverage
+
+      - name: Download webapp coverage
+        uses: actions/download-artifact@v8
+        with:
+          name: webapp-coverage
+          path: webapp/coverage
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./admin/coverage/lcov.info,./webapp/coverage/lcov.info
+          fail_ci_if_error: false
+
+  e2e:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v3
+        with:
+          version: latest
+          # 最新版取得時の未認証 GitHub API レート制限を避ける。
+          github-token: ${{ github.token }}
+
+      # Supabase の起動（docker イメージの pull + コンテナ起動）はこのジョブで最も時間がかかる。
+      # 依存インストール・Playwright ブラウザのインストール・Prisma Client 生成とは独立しているため、
+      # ここでバックグラウンドで開始し、それらの完了後に「Wait for Supabase」ステップで合流する。
+      # 出力をファイルへリダイレクトしないとステップがプロセス終了まで待ってしまうため必ずリダイレクトする。
+      - name: Start Supabase (background)
+        run: |
+          # admin E2E が必要とするのは db / kong / gotrue（認証）/ postgrest（疎通確認）と、
+          # gotrue の SMTP 先である mailpit、書類スキャンが原本を置く storage-api のみ。
+          # imgproxy・realtime・postgres-meta（studio 専用）・logflare（analytics）は使わないので除外する。
+          #
+          # config.toml のポート（54329〜54337）は Linux の一時ポートの範囲（32768〜60999）の中にある。
+          # 並行して走るイメージの pull などの外向き通信がたまたま同じ番号を使うと、
+          # 「address already in use」で db が起動できない。先にこの範囲を予約して一時ポートに使わせない。
+          # それでも失敗したときに備え、止めてから 1 回だけやり直す。
+          sudo sysctl -w net.ipv4.ip_local_reserved_ports=54329-54337
+          nohup bash -c '
+            exclude=imgproxy,edge-runtime,vector,studio,realtime,postgres-meta,logflare
+            supabase start --exclude "$exclude"
+            code=$?
+            if [ "$code" -ne 0 ]; then
+              echo "supabase start failed ($code); retrying once"
+              supabase stop --no-backup || true
+              sleep 5
+              supabase start --exclude "$exclude"
+              code=$?
+            fi
+            echo $code > /tmp/supabase-start.exit
+          ' > /tmp/supabase-start.log 2>&1 &
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '26'
+          cache: 'pnpm'
+
+      - name: Cache Prisma client
+        uses: actions/cache@v6
+        with:
+          path: node_modules/.prisma
+          key: ${{ runner.os }}-prisma-${{ hashFiles('prisma/schema.prisma') }}
+          restore-keys: |
+            ${{ runner.os }}-prisma-
+
+      - name: Cache Next.js build (admin)
+        uses: actions/cache@v6
+        with:
+          path: admin/.next/cache
+          key: ${{ runner.os }}-nextjs-admin-${{ hashFiles('pnpm-lock.yaml') }}-${{ hashFiles('admin/**/*.ts', 'admin/**/*.tsx') }}
+          restore-keys: |
+            ${{ runner.os }}-nextjs-admin-${{ hashFiles('pnpm-lock.yaml') }}-
+            ${{ runner.os }}-nextjs-admin-
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
+
+      # .next/cache にはコンパイラキャッシュに加えて Data Cache（fetch-cache、
+      # unstable_cache のエントリを含む）が永続化される。DB は毎ラン db:reset で
+      # リセットされ ID が再割り当てされるため、前ランの fetch-cache が残っていると
+      # キャッシュキーが衝突して前ランのデータが画面に表示されてしまう。
+      # コンパイラキャッシュだけを持ち越すよう、ビルド前に必ず削除する。
+      - name: Remove restored Next.js Data Cache
+        run: rm -rf admin/.next/cache/fetch-cache
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Install Playwright browsers
+        run: pnpm --filter admin exec playwright install chromium --with-deps
+
+      - name: Generate Prisma Client
+        run: pnpm db:generate
+
+      - name: Wait for Supabase
+        run: |
+          # バックグラウンドの supabase start は子プロセスではないため wait できない。
+          # 終了コードを書き出すファイルの出現をポーリングして完了を待つ。
+          echo "Waiting for supabase start to finish..."
+          timeout 300 bash -c 'until [ -f /tmp/supabase-start.exit ]; do sleep 2; done' \
+            || { echo "::error::supabase start timed out"; cat /tmp/supabase-start.log; exit 1; }
+
+          cat /tmp/supabase-start.log
+          exit_code=$(cat /tmp/supabase-start.exit)
+          if [ "$exit_code" != "0" ]; then
+            echo "::error::supabase start failed with exit code $exit_code"
+            exit "$exit_code"
+          fi
+
+          # Wait for Supabase API to be ready
+          echo "Waiting for Supabase API..."
+          timeout 60 bash -c 'until curl -s "$SUPABASE_URL/rest/v1/" > /dev/null 2>&1; do sleep 2; done'
+          echo "Supabase is ready"
+
+      - name: Get Supabase keys
+        id: supabase-keys
+        run: |
+          # Extract dynamic keys from Supabase CLI
+          SUPABASE_STATUS=$(supabase status --output json)
+          ANON_KEY=$(echo "$SUPABASE_STATUS" | jq -r '.ANON_KEY')
+          SERVICE_ROLE_KEY=$(echo "$SUPABASE_STATUS" | jq -r '.SERVICE_ROLE_KEY')
+
+          echo "SUPABASE_ANON_KEY=$ANON_KEY" >> $GITHUB_OUTPUT
+          echo "SUPABASE_SERVICE_ROLE_KEY=$SERVICE_ROLE_KEY" >> $GITHUB_OUTPUT
+
+          # Also set as environment variables for subsequent steps
+          echo "SUPABASE_ANON_KEY=$ANON_KEY" >> $GITHUB_ENV
+          echo "SUPABASE_SERVICE_ROLE_KEY=$SERVICE_ROLE_KEY" >> $GITHUB_ENV
+
+      - name: Run database migrations and seed
+        run: |
+          pnpm db:migrate:deploy
+          pnpm db:seed
+
+      - name: Build admin
+        run: pnpm build:admin
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ env.SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ steps.supabase-keys.outputs.SUPABASE_ANON_KEY }}
+
+      - name: Run E2E tests for admin
+        run: pnpm --filter admin test:e2e
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ env.SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ steps.supabase-keys.outputs.SUPABASE_ANON_KEY }}
+
+      - name: Upload admin E2E test results
+        uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: admin-e2e-report
+          path: admin/e2e/.output/
+          retention-days: 7
+          # .output は「.」始まりの隠しディレクトリなので、明示しないと何もアップロードされない
+          include-hidden-files: true
+
+  # main のブランチ保護で必須にする唯一のチェック。
+  # 各ジョブは paths によってスキップされうるが、このジョブは常に報告される。
+  ci-complete:
+    runs-on: ubuntu-latest
+    needs: [changes, admin, webapp, knip, coverage, e2e]
+    if: always()
+    steps:
+      - name: Check job results
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "results: $RESULTS"
+          if [[ "$RESULTS" == *failure* || "$RESULTS" == *cancelled* ]]; then
+            echo "::error::CI に失敗またはキャンセルされたジョブがあります"
+            exit 1
+          fi
+          echo "すべてのチェックが完了しました"

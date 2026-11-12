@@ -1,0 +1,96 @@
+@import "tailwindcss";
+
+@theme {
+  /* みんなのみらい まるみえ政治資金 デザイントークン（公開サイトと同じ配色: 白・黒・赤のアクセント、収入は青） */
+  --color-background: #f8f8f8;
+  --color-foreground: #000000;
+
+  --color-card: #ffffff;
+  --color-card-foreground: #000000;
+
+  --color-popover: #ffffff;
+  --color-popover-foreground: #000000;
+
+  --color-primary: #222222;
+  --color-primary-foreground: #ffffff;
+  --color-primary-hover: #000000;
+  --color-primary-active: #484848;
+
+  --color-secondary: #f8f8f8;
+  --color-secondary-foreground: #000000;
+
+  --color-muted: #f0f0f0;
+  --color-muted-foreground: #666666;
+  /* セクション見出し・補足日付など、muted よりさらに控えめな文字色（--tm-gray-400） */
+  --color-subtle-foreground: #939393;
+
+  --color-accent: #f2f2f2;
+  --color-accent-foreground: #222222;
+
+  --color-destructive: #bf342b;
+  --color-destructive-foreground: #ffffff;
+  --color-destructive-hover: #fdf0f1;
+
+  --color-teal-soft: #bf342b;
+  /* ブランドの赤（公開サイトのアクセントと同じ）。小見出しなどに使う */
+  --color-brand-red: #bf342b;
+  --color-teal-100: #f2f2f2;
+
+  --color-border: #000000;
+  --color-border-soft: #e5e5e5;
+  --color-input: #ffffff;
+  --color-ring: #222222;
+  --color-ring-soft: #e5e5e5;
+
+  --color-disabled-border: #cccccc;
+  --color-disabled-foreground: #b1b1b1;
+
+  --color-chart-1: #1e88e5;
+  --color-chart-2: #222222;
+  --color-chart-3: #bf342b;
+  --color-chart-4: #8a8a8a;
+  --color-chart-5: #dcebfa;
+
+  --color-sidebar: #ffffff;
+  --color-sidebar-foreground: #1f2937;
+  --color-sidebar-primary: #222222;
+  --color-sidebar-primary-foreground: #ffffff;
+  --color-sidebar-accent: #f2f2f2;
+  --color-sidebar-accent-foreground: #222222;
+  --color-sidebar-border: #e5e5e5;
+  --color-sidebar-ring: #222222;
+
+  --radius: 8px;
+
+  --font-sans:
+    var(--font-zen-kaku), "Zen Kaku Gothic New", var(--font-poppins), "Hiragino Kaku Gothic ProN",
+    "Noto Sans JP", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-latin: var(--font-poppins), "Poppins", "Noto Sans", system-ui, sans-serif;
+}
+
+html,
+body {
+  height: 100%;
+}
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background: var(--color-background);
+  color: var(--color-foreground);
+  letter-spacing: 0.02em;
+}
+
+/*
+ * 数値の入力欄に出るブラウザ標準の上下ボタン（スピンボタン）を消す。
+ * クリックのはずみで金額や年度が 1 ずつ変わる操作ミスを防ぐため（#1795）。
+ * マウスホイールでの増減は NumberInputWheelGuard で止めている。
+ */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}

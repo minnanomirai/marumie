@@ -1,0 +1,65 @@
+import type { ReportData } from "@/server/contexts/report/domain/models/report-data";
+import type { SummaryData } from "@/server/contexts/report/domain/models/summary-data";
+import { DonationSection } from "@/client/components/export-report/sections/DonationSection";
+import { IncomeSection } from "@/client/components/export-report/sections/IncomeSection";
+import { PoliticalActivityExpenseSection } from "@/client/components/export-report/sections/PoliticalActivityExpenseSection";
+import { ProfileSection } from "@/client/components/export-report/sections/ProfileSection";
+import { RegularExpenseSection } from "@/client/components/export-report/sections/RegularExpenseSection";
+import { SummarySection } from "@/client/components/export-report/sections/SummarySection";
+
+interface ReportDataPreviewProps {
+  reportData: ReportData;
+  summaryData: SummaryData;
+}
+
+export function ReportDataPreview({ reportData, summaryData }: ReportDataPreviewProps) {
+  const { profile, donations, income, expenses } = reportData;
+
+  return (
+    <div className="space-y-8">
+      <div>
+        <h2 className="text-base font-bold text-foreground">表形式プレビュー</h2>
+        <p className="mt-1 text-[13px] text-muted-foreground">
+          報告書データを表形式で確認できます。
+        </p>
+      </div>
+
+      <div className="space-y-8">
+        {/* プロフィール */}
+        <ProfileSection profile={profile} />
+
+        {/* 収支総括表 */}
+        <SummarySection summaryData={summaryData} />
+
+        {/* 収入の部 */}
+        <DonationSection personalDonations={donations.personalDonations} />
+
+        <IncomeSection
+          businessIncome={income.businessIncome}
+          loanIncome={income.loanIncome}
+          grantIncome={income.grantIncome}
+          otherIncome={income.otherIncome}
+        />
+
+        {/* 支出の部 */}
+        <RegularExpenseSection
+          utilityExpenses={expenses.utilityExpenses}
+          suppliesExpenses={expenses.suppliesExpenses}
+          officeExpenses={expenses.officeExpenses}
+        />
+
+        <PoliticalActivityExpenseSection
+          organizationExpenses={expenses.organizationExpenses}
+          electionExpenses={expenses.electionExpenses}
+          publicationExpenses={expenses.publicationExpenses}
+          advertisingExpenses={expenses.advertisingExpenses}
+          fundraisingPartyExpenses={expenses.fundraisingPartyExpenses}
+          otherBusinessExpenses={expenses.otherBusinessExpenses}
+          researchExpenses={expenses.researchExpenses}
+          donationGrantExpenses={expenses.donationGrantExpenses}
+          otherPoliticalExpenses={expenses.otherPoliticalExpenses}
+        />
+      </div>
+    </div>
+  );
+}
